@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Contacts</title>
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -401,7 +402,6 @@
   <div class="grid" id="contactsGrid"></div>
 </main>
 
-<!-- FORM MODAL -->
 <div class="overlay" id="formOverlay" style="display:none" onclick="handleOverlayClick(event)">
   <div class="modal" id="formModal">
     <div class="modal-title" id="formTitle">New <span>Contact</span></div>
@@ -424,12 +424,11 @@
     <div id="formError" style="color:var(--danger);font-size:13px;margin-top:-8px;display:none">Name is required.</div>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeForm()">Cancel</button>
-      <button class="btn-save" onclick="saveContact()">Save Contact</button>
+      <button class="btn-save" id="btnSave" onclick="saveContact()">Save Contact</button>
     </div>
   </div>
 </div>
 
-<!-- DELETE CONFIRM MODAL -->
 <div class="overlay" id="deleteOverlay" style="display:none" onclick="handleDeleteOverlayClick(event)">
   <div class="confirm-modal" id="deleteModal">
     <div class="confirm-icon">🗑️</div>
@@ -443,32 +442,38 @@
 </div>
 
 <script>
+  // CONFIGURAÇÃO SUPABASE - COLOQUE SEUS DADOS AQUI
+  const SB_URL = 'SUA_URL_AQUI'; 
+  const SB_KEY = 'SUA_CHAVE_ANON_AQUI';
+  const _supabase = supabase.createClient(SB_URL, SB_KEY);
+
   let contacts = [];
   let editingId = null;
   let deletingId = null;
 
-  const STORAGE_KEY = 'contacts_v1';
-
-  function save() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(contacts));
-  }
-
-  function load() {
+  // CARREGAR DO BANCO (Substitui localStorage)
+  async function load() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) contacts = JSON.parse(raw);
-    } catch(e) { contacts = []; }
-  }
-
-  function uid() {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2);
+      const { data, error } = await _supabase
+        .from('Contatos')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      contacts = data || [];
+      renderContacts();
+    } catch (e) {
+      console.error("Erro ao carregar:", e.message);
+    }
   }
 
   function getInitials(name) {
+    if (!name) return '?';
     return name.trim().split(' ').slice(0,2).map(w => w[0]).join('').toUpperCase();
   }
 
   function escHtml(str) {
+    if (!str) return '';
     const d = document.createElement('div');
     d.textContent = str;
     return d.innerHTML;
@@ -477,9 +482,9 @@
   function renderContacts() {
     const query = document.getElementById('searchInput').value.toLowerCase();
     const filtered = contacts.filter(c =>
-      c.name.toLowerCase().includes(query) ||
-      c.phone.toLowerCase().includes(query) ||
-      c.email.toLowerCase().includes(query)
+      (c.name || '').toLowerCase().includes(query) ||
+      (c.phone || '').toLowerCase().includes(query) ||
+      (c.email || '').toLowerCase().includes(query)
     );
 
     const grid = document.getElementById('contactsGrid');
@@ -514,8 +519,8 @@
         ${c.email ? `<div class="card-field"><span class="icon">✉️</span><span class="value">${escHtml(c.email)}</span></div>` : ''}
         ${c.obs ? `<div class="card-obs">💬 ${escHtml(c.obs)}</div>` : ''}
         <div class="card-actions">
-          <button class="btn-edit" onclick="openEdit('${c.id}')">Edit</button>
-          <button class="btn-delete" onclick="openDelete('${c.id}')">Delete</button>
+          <button class="btn-edit" onclick="openEdit(${c.id})">Edit</button>
+          <button class="btn-delete" onclick="openDelete(${c.id})">Delete</button>
         </div>
       </div>
     `).join('');
@@ -555,28 +560,41 @@
     if (e.target === document.getElementById('formOverlay')) closeForm();
   }
 
-  function saveContact() {
+  // SALVAR NO SUPABASE (Substitui save antigo)
+  async function saveContact() {
+    const btn = document.getElementById('btnSave');
     const name = document.getElementById('fieldName').value.trim();
+    
     if (!name) {
       document.getElementById('formError').style.display = 'block';
       document.getElementById('fieldName').focus();
       return;
     }
-    const data = {
+
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+
+    const payload = {
       name,
       phone: document.getElementById('fieldPhone').value.trim(),
       email: document.getElementById('fieldEmail').value.trim(),
       obs: document.getElementById('fieldObs').value.trim(),
     };
-    if (editingId) {
-      const idx = contacts.findIndex(c => c.id === editingId);
-      if (idx !== -1) contacts[idx] = { ...contacts[idx], ...data };
-    } else {
-      contacts.unshift({ id: uid(), ...data });
+
+    try {
+      if (editingId) {
+        await _supabase.from('Contatos').update(payload).eq('id', editingId);
+      } else {
+        await _supabase.from('Contatos').insert([payload]);
+      }
+      closeForm();
+      load(); // Recarrega a lista do banco
+    } catch (e) {
+      alert("Erro ao salvar contato.");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Save Contact";
     }
-    save();
-    closeForm();
-    renderContacts();
   }
 
   function openDelete(id) {
@@ -593,11 +611,15 @@
     if (e.target === document.getElementById('deleteOverlay')) closeDelete();
   }
 
-  function confirmDelete() {
-    contacts = contacts.filter(c => c.id !== deletingId);
-    save();
-    closeDelete();
-    renderContacts();
+  // DELETAR NO SUPABASE
+  async function confirmDelete() {
+    try {
+      await _supabase.from('Contatos').delete().eq('id', deletingId);
+      closeDelete();
+      load();
+    } catch (e) {
+      alert("Erro ao deletar.");
+    }
   }
 
   // Keyboard
@@ -606,8 +628,8 @@
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') saveContact();
   });
 
+  // Inicializa carregando do banco
   load();
-  renderContacts();
 </script>
 </body>
 </html>
